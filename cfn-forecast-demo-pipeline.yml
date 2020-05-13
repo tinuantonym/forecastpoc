@@ -1,0 +1,200 @@
+Description: Create a CodePipeline to build pipeline for forecast-demo
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Description: URL for source code
+    Default: https://github.com/racheliurui/forecast-demo.git
+  SamBucket:
+    Type: String
+    Description: SamBucket
+    Default: racliu.sam.ap-southeast-2
+  ForecastDemoDataBucketName:
+    Description: S3 path pointing to raw data
+    Type: String
+    Default: racliu-forecast-demo-ap-southeast-2
+
+
+Resources:
+
+  ForecastDemoDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+       BucketName : !Ref ForecastDemoDataBucketName
+       NotificationConfiguration:
+          TopicConfigurations:
+            - Event: s3:ObjectCreated:*
+              Filter:
+                S3Key:
+                  Rules:
+                    - Name: prefix
+                      Value: covid-19-ml
+              Topic: !Ref S3ObjectNotificationTopic
+
+  SNSTopicPolicy:
+      Type: AWS::SNS::TopicPolicy
+      Properties:
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                AWS: "*"
+              Action: SNS:Publish
+              Resource: !Ref S3ObjectNotificationTopic
+        Topics:
+          - !Ref S3ObjectNotificationTopic
+
+
+  S3ObjectNotificationTopic:
+      Type: AWS::SNS::Topic
+
+  ImportDataCmdQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: forecast-cmd-importdata
+
+  CodeBuildRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName:
+        Fn::Sub: CodePipelineRoleForforecast-demo
+      # 3 hours
+      MaxSessionDuration: 10800
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "codebuild.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: /service-role/
+      Policies:
+        -
+          PolicyName: "CodeBuildPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "events:*"
+                Resource:
+                  - Fn::Sub: arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/*
+              -
+                Effect: "Allow"
+                Action:
+                  - "s3:*"
+                Resource:
+                  - !Sub
+                    - arn:aws:s3:::${S3BucketName}
+                    - { S3BucketName: !Ref SamBucket }
+                  - !Sub
+                    - arn:aws:s3:::${S3BucketName}/*
+                    - { S3BucketName: !Ref SamBucket }
+              -
+                Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource:
+                  - Fn::Sub: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/forecast-demo-codebuild
+                  - Fn::Sub: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/forecast-demo-codebuild:*
+              -
+                Effect: "Allow"
+                Action:
+                  - "s3:PutObject"
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:GetBucketAcl"
+                  - "s3:GetBucketLocation"
+                Resource:
+                  - Fn::Sub: arn:aws:s3:::codepipeline-${AWS::Region}-*
+              -
+                Effect: "Allow"
+                Action:
+                  - "codebuild:CreateReportGroup"
+                  - "codebuild:CreateReport"
+                  - "codebuild:UpdateReport"
+                  - "codebuild:BatchPutTestCases"
+                Resource:
+                  - Fn::Sub: arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/forecast-demo-codebuild-*
+              # allow code build to be able to deploy sam
+              -
+                Effect: "Allow"
+                Action:
+                  - "apigateway:*"
+                  - "codedeploy:*"
+                  - "lambda:*"
+                  - "cloudformation:*"
+                  - "iam:GetRole"
+                  - "iam:CreateRole"
+                  - "iam:DeleteRole"
+                  - "iam:PutRolePolicy"
+                  - "iam:AttachRolePolicy"
+                  - "iam:Get*"
+                  - "iam:DeleteRolePolicy"
+                  - "iam:DetachRolePolicy"
+                  - "iam:PassRole"
+                  - "s3:*"
+                  - "ec2:*"
+                  - "sns:*"
+                  - "sqs:*"
+                Resource:
+                  - "*"
+
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn: CodeBuildRole
+    Properties:
+      Description: forecast demo codebuild task
+      TimeoutInMinutes: 30
+      Artifacts:
+        Type: no_artifacts
+      Environment:
+        #https://docs.aws.amazon.com/codebuild/latest/userguide/build-env-ref-compute-types.html
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/standard:2.0
+        Type: LINUX_CONTAINER
+        PrivilegedMode: True
+        EnvironmentVariables:
+          -
+            Name: SAM_Bucket
+            Type: PLAINTEXT
+            Value: !Ref SamBucket
+          -
+            Name: ForecastDemoDataBucket
+            Type: PLAINTEXT
+            Value: !Ref ForecastDemoDataBucket
+          -
+            Name: S3ObjectCreateSNSTopicARN
+            Type: PLAINTEXT
+            Value: !Ref S3ObjectNotificationTopic
+          -
+            Name: ImportDataCmdQARN
+            Type: PLAINTEXT
+            Value: !GetAtt ImportDataCmdQ.Arn
+          -
+            Name: ImportDataCmdQUrl
+            Type: PLAINTEXT
+            Value: !Ref ImportDataCmdQ
+      Name: forecast-demo-codebuild
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source:
+        Type: GITHUB
+        Location: !Ref GitHubRepo
+      Triggers:
+        Webhook: true
+        FilterGroups:
+          - - Type: EVENT
+              Pattern: PUSH
+            - Type: HEAD_REF
+              Pattern: ^refs/heads/.*
+            - Type: FILE_PATH
+              Pattern: README.md
+              ExcludeMatchedPattern: true
