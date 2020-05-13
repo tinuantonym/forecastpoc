@@ -8,46 +8,73 @@ import csv
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
-import vars
 
+dataPrefix = "PMFORECAST"
 S3BucketName = os.environ['S3BucketName']
 roleArn = os.environ['ForecastExecutionRole']
-dataPrefix = "COVID19"
 
 s3_client = boto3.client('s3')
 forecast_client = boto3.client("forecast")
 
 target_schema = {
-    "Attributes": [
-        {
-            "AttributeName": "timestamp",
-            "AttributeType": "timestamp"
-        },
-        {
-            "AttributeName": "item_id",
-            "AttributeType": "string"
-        },
-        {
-            "AttributeName": "target_value",
-            "AttributeType": "float"
-        }
-    ]
+	"Attributes": [
+		{
+			"AttributeName": "item_id",
+			"AttributeType": "string"
+		},
+		{
+			"AttributeName": "timestamp",
+			"AttributeType": "timestamp"
+		},
+		{
+			"AttributeName": "target_value",
+			"AttributeType": "float"
+		}
+	]
 }
 related_schema = {
-    "Attributes": [
-        {
-            "AttributeName": "timestamp",
-            "AttributeType": "timestamp"
-        },
-        {
-            "AttributeName": "item_id",
-            "AttributeType": "string"
-        },
-        {
-            "AttributeName": "totalTestResults",
-            "AttributeType": "float"
-        }
-    ]
+	"Attributes": [
+		{
+			"AttributeName": "item_id",
+			"AttributeType": "string"
+		},
+		{
+			"AttributeName": "timestamp",
+			"AttributeType": "timestamp"
+		},
+		{
+			"AttributeName": "WindGust",
+			"AttributeType": "float"
+		},
+		{
+			"AttributeName": "WindDir_avg",
+			"AttributeType": "float"
+		},
+		{
+			"AttributeName": "RH",
+			"AttributeType": "float"
+		},
+		{
+			"AttributeName": "Rain_mm_Tot",
+			"AttributeType": "float"
+		},
+		{
+			"AttributeName": "BP_mb",
+			"AttributeType": "float"
+		},
+		{
+			"AttributeName": "AirTC_Min",
+			"AttributeType": "float"
+		},
+		{
+			"AttributeName": "AirTC_Max",
+			"AttributeType": "float"
+		},
+		{
+			"AttributeName": "AirTC_Avg",
+			"AttributeType": "float"
+		}
+	]
 }
 
 def tranformDateToString(date):
@@ -89,10 +116,10 @@ def upsertDataImportJob(client, DataSetArn, S3Url):
         DataSource={
             'S3Config': {
                 'Path': S3Url,
-                'RoleArn': roleArn,
-            }
+                'RoleArn': roleArn
+          }
         },
-        TimestampFormat='yyyy-MM-dd'
+        TimestampFormat='yyyy-MM-dd hh:mm:ss'
     )
 
 
@@ -116,7 +143,7 @@ def upsertDataSet(existingDataSets, client, schema, datasetName, datasetType):
         Domain='CUSTOM',
         # DatasetType='TARGET_TIME_SERIES'|'RELATED_TIME_SERIES'|'ITEM_METADATA',
         DatasetType=datasetType,
-        DataFrequency='D',
+        DataFrequency='10min',
         Schema=schema
     )
     return response["DatasetArn"]
@@ -125,28 +152,22 @@ def upsertDataSet(existingDataSets, client, schema, datasetName, datasetType):
 def onEventHandler(event, context):
     if event is None:
         return
-    print("entry of loadforecastdata!!! ")
-    body = json.loads(event['Records'][0]['body'])
-    message = json.loads(body['Message'])
-    # print("From SQS: " + json.dumps(message))
-    sourceBucketName = message["Records"][0]["s3"]["bucket"]["name"]
-    sourceObjectKey = message["Records"][0]["s3"]["object"]["key"]
-    if (not "history" in sourceObjectKey):
+    print(event)
+    sourceBucketName = event["Records"][0]["s3"]["bucket"]["name"]
+    sourceObjectKey = event["Records"][0]["s3"]["object"]["key"]
+    if (not "History" in sourceObjectKey):
         return
     # print(sourceObjectKey+ " is not historical data, no forecast dataset group will be created !" )
-
+    datasetGroupName = dataPrefix
+    
     s3ObjectUrl = "s3://" + sourceBucketName + "/" + sourceObjectKey
-    startDate=getDateFromString(sourceObjectKey.split("/")[-1].split(".")[-3])
-    endDate=getDateFromString(sourceObjectKey.split("/")[-1].split(".")[-2])
-
-    datasetGroupName = dataPrefix + "_" + tranformDateToString(startDate).replace("-", "") + "_" + tranformDateToString(endDate).replace("-", "")
+    
     # if the new job is not to upload history data , then quit the loading
-    if (not "history" in s3ObjectUrl):
-        print("===not history data, return" + s3ObjectUrl)
+    if (not "History" in s3ObjectUrl):
+        print("===not History data, return" + s3ObjectUrl)
         return
 
-    response = forecast_client.list_datasets(
-    )
+    response = forecast_client.list_datasets()
     existingDataSets = response["Datasets"]
     # upsert data set
     targetDataSetArn = upsertDataSet(existingDataSets, forecast_client, target_schema, datasetGroupName + "_target",
@@ -165,7 +186,7 @@ def onEventHandler(event, context):
         )
 
     # load history data
-    if ("target" in s3ObjectUrl):
+    if ("Target" in s3ObjectUrl):
         upsertDataImportJob(forecast_client, targetDataSetArn, s3ObjectUrl)
-    if ("related" in s3ObjectUrl):
+    if ("Related" in s3ObjectUrl):
         upsertDataImportJob(forecast_client, relatedDataSetArn, s3ObjectUrl)
