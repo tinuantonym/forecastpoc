@@ -4,15 +4,15 @@ Parameters:
   GitHubRepo:
     Type: String
     Description: URL for source code
-    Default: https://github.com/racheliurui/forecast-demo.git
+    Default: https://github.com/tinuantonym/forecastpoc.git
   SamBucket:
     Type: String
     Description: SamBucket
-    Default: racliu.sam.ap-southeast-2
+    Default: sambucketdeploy
   ForecastDemoDataBucketName:
     Description: S3 path pointing to raw data
     Type: String
-    Default: racliu-forecast-demo-ap-southeast-2
+    Default: cfnforecast
 
 
 Resources:
